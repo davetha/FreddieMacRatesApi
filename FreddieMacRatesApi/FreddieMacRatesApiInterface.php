@@ -3,7 +3,7 @@
 namespace App\Services\FreddieMacRatesApi;
 
 /**
- * The Realty FeddieMacRates API interface
+ * FeddieMacRates API interface
  */
 interface FreddieMacRatesApiInterface
 {
