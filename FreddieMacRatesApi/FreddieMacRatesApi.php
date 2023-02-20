@@ -1,17 +1,18 @@
 <?php
 
 namespace App\Services\FreddieMacRatesApi;
+
 use GuzzleHttp\Client;
-use PhpOffice\PhpSpreadsheet\Reader\Xls;
+use \Illuminate\Support\Collection;
 
 class FreddieMacRatesApi implements FreddieMacRatesApiInterface
 {
-    private $rateUrl = 'https://www.freddiemac.com/pmms/docs/historicalweeklydata.xls';
+    private $rateUrl = 'https://www.freddiemac.com/pmms/docs/PMMS_history.csv';
 
     private $guzzleOptions = [
         'timeout' => 15,
         'connect_timeout' => 15,
-        'verify' => false
+        'verify' => false,
     ];
 
     /**
@@ -19,24 +20,24 @@ class FreddieMacRatesApi implements FreddieMacRatesApiInterface
      */
     public function __construct()
     {
-
     }
 
-    public function getHistoricalRates() {
+    public function getHistoricalRates()
+    {
         return $this->formatOutput(
-            $this->loadSheet("Full History", $this->fetchData())
+            $this->loadSheet($this->fetchData())
         );
     }
 
-    public function getWeekly() {
-        $year = date("Y");
-        return $this->formatOutput(
-            $this->loadSheet("1PMMS" . $year, $this->fetchData()), $year
-        );
+    public function getWeekly()
+    {
+        $year = date('Y');
+        return $this->formatOutput($this->loadSheet($this->fetchData()),$year);
 
     }
 
-    private function fetchData() {
+    private function fetchData()
+    {
         $tempDatafile = tempnam(sys_get_temp_dir(), 'freddie-rates-');
         $client = new Client($this->guzzleOptions);
         try {
@@ -47,48 +48,68 @@ class FreddieMacRatesApi implements FreddieMacRatesApiInterface
             }
             throw new \Exception('Unable to fetch data from ' . $this->rateUrl);
         }
+
         return $tempDatafile;
     }
 
-    private function formatOutput(array $sheetArray, int $year = NULL) {
+    private function formatOutput(Collection $sheetArray, int $year = null)
+    {
+        // Make Carbon object for a particular year.
+        $query = $sheetArray;
+        if ($year) {
+            $date = \Carbon\Carbon::createFromDate($year, 1, 1);
+            $query = $query->where('date', '>', $date);
+        } else {
+            $date = \Carbon\Carbon::createFromDate(1970, 1, 1);
+        }
 
         $formattedArray = [];
-        foreach ($sheetArray as $row) {
+        foreach ($sheetArray->where('date', '>', $date) as $row) {
             // If the row doesn't start with a date, skip it.
-            if (!preg_match('/^\d+\/\d+/', $row[0])) {
-                continue;
-            }
+
             $formattedArray[] = [
-                'mortgage_date' => $year ? $row[0] . "/" . $year : $row[0],
-                'fixed_30' => is_numeric(rtrim($row[1]) ) ? rtrim($row[1]) : NULL,
-                'fixed_30_fees_and_points' => is_numeric(rtrim($row[2]) ) ? rtrim($row[2]) : NULL,
-                'fixed_15' => is_numeric(rtrim($row[3]) ) ? rtrim($row[3]) : NULL,
-                'fixed_15_fees_and_points' => is_numeric(rtrim($row[4]) ) ? rtrim($row[4]) : NULL,
-                'arm_5' => is_numeric(rtrim($row[5]) ) ? rtrim($row[5]) : NULL,
-                'arm_5_fees_and_points' => is_numeric(rtrim($row[6]) ) ? rtrim($row[6]) : NULL,
-                'arm_5_margin' => is_numeric(rtrim($row[7]) ) ? rtrim($row[7]) : NULL,
-                'spread_30_yr_5_1_arm' => is_numeric(rtrim($row[8]) ) ? rtrim($row[8]) : NULL,
+                'mortgage_date' => $row['date']->format('m/d/Y'),
+                'fixed_30' => $row['pmms30'] ?? null,
+                'fixed_30_fees_and_points' => is_numeric($row['pmms30p']) ? $row['pmms30p'] : null,
+                'fixed_15' => $row['pmms15'] ?? null,
+                'fixed_15_fees_and_points' => $row['pmms15p'] ?? null,
+                'arm_5' => $row['pmms51'] ?? null,
+                'arm_5_fees_and_points' => $row['pmms51p'] ?? null,
+                'arm_5_margin' => $row['pmms51m'] ?? null,
+                'spread_30_yr_5_1_arm' => $row['pmms51spread'] ?? null,
             ];
+
         }
 
         return $formattedArray;
-
     }
 
-    private function loadSheet(string $sheetName,string $sheetPath) {
-        $sheet = new Xls();
-        $loadSheet = $sheet->load($sheetPath);
-        //dd($loadSheet->getSheetNames());
-        $sheetNumber = array_search($sheetName, $loadSheet->getSheetNames());
-        if ( $sheetNumber === false ) {
-            if (file_exists($sheetPath)) {
-                unlink($sheetPath);
+    private function loadSheet(string $sheetPath)
+    {
+        // read CSV to associative array
+        $csv = array_map('str_getcsv', file($sheetPath));
+        // get header row
+        $header = array_shift($csv);
+        
+
+
+        // replace header row keys with header row values
+        $csv = array_map(function($row) use ($header) {
+            foreach ($header as $key => $value) {
+                // Make Carbon date
+                if ($value === 'date') {
+                    $row[$value] = \Carbon\Carbon::createFromFormat('m/d/Y', $row[$key]) ?? null;
+                    unset($row[$key]);
+                    continue;
+                }
+                $row[$value] = $row[$key] ?? null;
+                unset($row[$key]);
             }
-            throw new \Exception('Sheet ' . $sheetName . ' not found in ' . $sheetPath);
-        }
+            return array_combine($header, $row);
+        }, $csv);
 
-        unlink($sheetPath);
-        return $loadSheet->getSheet($sheetNumber)->toArray();
+        // Add to collection
+        return collect($csv);
+        
     }
-
 }
